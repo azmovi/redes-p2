@@ -86,10 +86,10 @@ class Conexao:
         flags = FLAGS_SYN + FLAGS_ACK
         self._enviar(flags)
 
-    def _enviar(self, flags):
+    def _enviar(self, flags, payload=None):
         src_addr, src_port, dst_addr, dst_port = self.id_conexao
         segmento = fix_checksum(
-            make_header(dst_port, src_port, self.seq_no, self.ack_no, flags),
+            make_header(dst_port, src_port, self.seq_no, self.ack_no, flags) + (payload or b''),
             src_addr,
             dst_addr,
         )
@@ -131,14 +131,7 @@ class Conexao:
         for i in range(0, len(dados), MSS):
             payload = dados[i: i + MSS]
             if payload:
-                src_addr, src_port, dst_addr, dst_port = self.id_conexao
-                segmento = fix_checksum(
-                    make_header(dst_port, src_port, self.seq_no, self.ack_no, flags)
-                    + payload,
-                    src_addr,
-                    dst_addr,
-                )
-                self.servidor.rede.enviar(segmento, src_addr)
+                self._enviar(flags, payload)
                 self.seq_no += len(payload)
 
     def fechar(self):
