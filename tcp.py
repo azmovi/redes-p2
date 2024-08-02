@@ -2,6 +2,7 @@ import asyncio
 from tcputils import (
     FLAGS_SYN,
     FLAGS_ACK,
+    FLAGS_FIN,
     read_header,
     calc_checksum,
     fix_checksum,
@@ -77,6 +78,7 @@ class Conexao:
         self.seq_no = seq_no
         self.ack_no = ack_no
         self.handshake()
+        self.open = True
         # self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
 
     def handshake(self):
@@ -97,15 +99,20 @@ class Conexao:
         print('Este é um exemplo de como fazer um timer')
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        if seq_no != self.ack_no:
+        if seq_no != self.ack_no or not self.open:
             return
+
         self.ack_no = seq_no + len(payload)
         self.seq_no = ack_no
+
         if payload:
-            flags = FLAGS_ACK
+            new_flags = FLAGS_ACK
             self.callback(self, payload)
-            self._enviar(flags)
+            self._enviar(new_flags)
             print('recebido payload: %r' % payload)
+
+        if flags & FLAGS_FIN == FLAGS_FIN:
+            self.fechar()
 
     # Os métodos abaixo fazem parte da API
 
@@ -138,5 +145,8 @@ class Conexao:
         """
         Usado pela camada de aplicação para fechar a conexão
         """
-        # TODO: implemente aqui o fechamento de conexão
-        pass
+        flags = FLAGS_FIN | FLAGS_ACK
+        self.ack_no = self.seq_no + 1
+        self.callback(self, b'')
+        self._enviar(flags)
+        self.open = False
