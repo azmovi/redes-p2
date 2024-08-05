@@ -7,7 +7,7 @@ from tcputils import (
     calc_checksum,
     fix_checksum,
     make_header,
-    MSS
+    MSS,
 )
 
 
@@ -72,47 +72,82 @@ class Conexao:
         self.servidor = servidor
         self.id_conexao = id_conexao
         self.callback = None
-        self.timer = asyncio.get_event_loop().call_later(
-            1, self._exemplo_timer
-        )
         self.seq_no = seq_no
         self.ack_no = ack_no
-        self.handshake()
+        self._handshake()
         self.open = True
-        # self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
+        self.not_confirmed = set()
+        self.segments = {}
+        self.timer = None
+        self.reenvio = False
 
-    def handshake(self):
+    def _handshake(self):
         self.ack_no = self.seq_no + 1
         flags = FLAGS_SYN + FLAGS_ACK
-        self._enviar(flags)
+        self._tratar(flags)
 
-    def _enviar(self, flags, payload=None):
+    def _reenviar(self):
+        payload = self.segments.get(self.seq_no)
+
+        if payload:
+            self.seq_no -= len(payload)
+            self.enviar(payload)
+            self.reenvio = False
+
+    def _tratar(self, flags, payload=None):
+        self._enviar_para_servidor(flags, payload)
+
+        if payload:
+            self._tratar_payload(payload)
+
+    def _enviar_para_servidor(self, flags, payload=None):
         src_addr, src_port, dst_addr, dst_port = self.id_conexao
         segmento = fix_checksum(
-            make_header(dst_port, src_port, self.seq_no, self.ack_no, flags) + (payload or b''),
+            make_header(dst_port, src_port, self.seq_no, self.ack_no, flags)
+            + (payload or b''),
             src_addr,
             dst_addr,
         )
         self.servidor.rede.enviar(segmento, src_addr)
 
-    def _exemplo_timer(self):
-        print('Este é um exemplo de como fazer um timer')
+    def _tratar_payload(self, payload):
+        self.seq_no += len(payload)
+        self.segments[self.seq_no] = payload
+
+        if self.timer:
+            self.timer.cancel()
+
+        self.timer = asyncio.get_event_loop().call_later(
+            0.5, self._reenviar
+        )
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        if seq_no != self.ack_no or not self.open:
+        if not self.open:
             return
 
-        self.ack_no = seq_no + len(payload)
-        self.seq_no = ack_no
+        print(f'Servidor: seq_no = {self.seq_no}, ack_no = {self.ack_no}')
+        print(f'Cliente: seq_no = {seq_no}, ack_no = {ack_no}')
 
-        if payload:
-            new_flags = FLAGS_ACK
-            self.callback(self, payload)
-            self._enviar(new_flags)
-            print('recebido payload: %r' % payload)
+        if seq_no == self.ack_no:
 
-        if flags & FLAGS_FIN == FLAGS_FIN:
-            self.fechar()
+            if self.segments: # Limpar os segmentos que já foram validados
+                del self.segments[self.seq_no]
+
+            self.ack_no = seq_no + len(payload)
+            self.seq_no = ack_no
+
+            if payload:
+                new_flags = FLAGS_ACK
+                self.callback(self, payload)
+                self._tratar(new_flags)
+                print('recebido payload: %r' % payload)
+
+            if flags & FLAGS_FIN == FLAGS_FIN:
+                self.fechar()
+
+        elif self.segments:
+            self.reenvio = True
+            self._reenviar()
 
     # Os métodos abaixo fazem parte da API
 
@@ -127,12 +162,15 @@ class Conexao:
         """
         Usado pela camada de aplicação para enviar dados
         """
+        if not self.open:
+            return
+
         flags = FLAGS_ACK
+
         for i in range(0, len(dados), MSS):
-            payload = dados[i: i + MSS]
+            payload = dados[i : i + MSS]
             if payload:
-                self._enviar(flags, payload)
-                self.seq_no += len(payload)
+                self._tratar(flags, payload)
 
     def fechar(self):
         """
@@ -141,5 +179,5 @@ class Conexao:
         flags = FLAGS_FIN | FLAGS_ACK
         self.ack_no = self.seq_no + 1
         self.callback(self, b'')
-        self._enviar(flags)
+        self._tratar(flags)
         self.open = False
