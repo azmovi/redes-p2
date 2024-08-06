@@ -1,4 +1,6 @@
 import asyncio
+from random import randint
+import os
 from tcputils import (
     FLAGS_SYN,
     FLAGS_ACK,
@@ -52,8 +54,15 @@ class Servidor:
         id_conexao = (src_addr, src_port, dst_addr, dst_port)
 
         if (flags & FLAGS_SYN) == FLAGS_SYN:
+            print('Abrindo conexão')
+            print(
+                f'Cliente: seq_no = {seq_no}, ack_no = {ack_no}, payload = {len(payload)}'
+            )
             conexao = self.conexoes[id_conexao] = Conexao(
-                self, id_conexao, seq_no, ack_no
+                self,
+                id_conexao,
+                randint(0, 0xFFFF),
+                seq_no,
             )
             if self.callback:
                 self.callback(conexao)
@@ -82,19 +91,25 @@ class Conexao:
         self.reenvio = False
 
     def _handshake(self):
-        self.ack_no = self.seq_no + 1
+        self.ack_no += 1
         flags = FLAGS_SYN + FLAGS_ACK
         self._tratar(flags)
 
     def _reenviar(self):
-        payload = self.segments.get(self.seq_no)
+        print(self.segments.keys())
+        seq_no = min(iter(self.segments))
+        payload = self.segments.pop(seq_no)
+        print(seq_no)
+        
 
         if payload:
+            print('REENVIO')
             self.seq_no -= len(payload)
-            self.enviar(payload)
+            self._tratar(FLAGS_ACK, seq_no, payload)
             self.reenvio = False
 
     def _tratar(self, flags, payload=None):
+
         self._enviar_para_servidor(flags, payload)
 
         if payload:
@@ -108,30 +123,40 @@ class Conexao:
             src_addr,
             dst_addr,
         )
+        tam_payload = 0 if not payload else len(payload)
+        print(
+            f'Servidor: seq_no = {self.seq_no}, ack_no = {self.ack_no}, payload = {tam_payload}'
+        )
         self.servidor.rede.enviar(segmento, src_addr)
 
-    def _tratar_payload(self, payload):
+    def _tratar_payload(self, payload, seq_no=None):
+        if seq_no: #reenvio
+            self.seq_no = seq_no
+
         self.seq_no += len(payload)
         self.segments[self.seq_no] = payload
 
         if self.timer:
             self.timer.cancel()
 
-        self.timer = asyncio.get_event_loop().call_later(
-            0.5, self._reenviar
-        )
+        self.timer = asyncio.get_event_loop().call_later(1, self._reenviar)
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
         if not self.open:
             return
 
-        print(f'Servidor: seq_no = {self.seq_no}, ack_no = {self.ack_no}')
-        print(f'Cliente: seq_no = {seq_no}, ack_no = {ack_no}')
+        print('RECEBER')
+        print(
+            f'Cliente: seq_no = {seq_no}, ack_no = {ack_no}, payload = {len(payload)}'
+        )
 
         if seq_no == self.ack_no:
 
-            if self.segments: # Limpar os segmentos que já foram validados
-                del self.segments[self.seq_no]
+            if self.segments:
+                if self.seq_no in self.segments:   # Limpar os segmentos que já foram validados
+                    del self.segments[self.seq_no]
+                else:
+                    self.enviar(next(iter(self.segments.values())))
 
             self.ack_no = seq_no + len(payload)
             self.seq_no = ack_no
@@ -143,6 +168,7 @@ class Conexao:
                 print('recebido payload: %r' % payload)
 
             if flags & FLAGS_FIN == FLAGS_FIN:
+                self.ack_no = seq_no + 1
                 self.fechar()
 
         elif self.segments:
@@ -177,7 +203,7 @@ class Conexao:
         Usado pela camada de aplicação para fechar a conexão
         """
         flags = FLAGS_FIN | FLAGS_ACK
-        self.ack_no = self.seq_no + 1
+        print('Fechando conexão')
         self.callback(self, b'')
         self._tratar(flags)
         self.open = False
