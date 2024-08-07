@@ -1,7 +1,6 @@
 import asyncio
 from random import randint
 from time import time
-import os
 from tcputils import (
     FLAGS_SYN,
     FLAGS_ACK,
@@ -98,13 +97,12 @@ class Conexao:
         self._tratar(flags)
 
     def _reenviar(self):
-        print("REENVIAR")
+        print('REENVIAR')
         self.reenvio = True
         self.seq_no = min(self.segments)
         payload = self.segments.pop(self.seq_no, None)
         self.seq_no -= len(payload)
         self._tratar(FLAGS_ACK, payload)
-
 
     def _tratar(self, flags, payload=None):
         self._enviar_para_servidor(flags, payload)
@@ -131,18 +129,24 @@ class Conexao:
 
         if self.timer:
             self.timer.cancel()
+
         self.timer = asyncio.get_event_loop().call_later(
             (self.timeout_interval or 1), self._reenviar
         )
 
     def _calculate_time(self):
+        self.sample_rtt = time() - self.send_time
+
         if self.timeout_interval:
-            self.estimate_rtt = 0.875 * self.estimate_rtt + 0.125 * self.sample_rtt
-            self.dev_rtt = 0.75 * self.dev_rtt + 0.25 * abs(self.sample_rtt - self.estimate_rtt)
+            self.estimate_rtt = (
+                0.875 * self.estimate_rtt + 0.125 * self.sample_rtt
+            )
+            self.dev_rtt = 0.75 * self.dev_rtt + 0.25 * abs(
+                self.sample_rtt - self.estimate_rtt
+            )
         else:
-            self.sample_rtt = time() - self.send_time
             self.estimate_rtt = self.sample_rtt
-            self.dev_rtt = self.sample_rtt/2
+            self.dev_rtt = self.sample_rtt / 2
 
         return self.estimate_rtt + 4 * self.dev_rtt
 
@@ -154,10 +158,11 @@ class Conexao:
         print(
             f'Cliente: seq_no = {seq_no}, ack_no = {ack_no}, payload = {len(payload)}'
         )
-        print("AAAAAAAAAa", self.reenvio)
+        if not self.reenvio and self.send_time:
+            self.timeout_interval = self._calculate_time()
 
         if seq_no == self.ack_no:
-            if self.seq_no in self.segments: # Limpar os segmentos reconhecidos
+            if self.seq_no in self.segments:  # Limpar segmentos reconhecidos
                 del self.segments[self.seq_no]
 
             self.ack_no = seq_no + len(payload)
@@ -190,6 +195,7 @@ class Conexao:
             return
 
         self.reenvio = False
+        self.send_time = time()
         flags = FLAGS_ACK
         for i in range(0, len(dados), MSS):
             payload = dados[i : i + MSS]
